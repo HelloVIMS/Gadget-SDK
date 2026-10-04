@@ -74,7 +74,7 @@ func Unit(a Account, name string) (string, error) {
 	}
 	return fmt.Sprintf(`[Unit]
 Description=VIMS gadget agent
-Documentation=https://github.com/HelloVIMS/gadget-sdk/tree/main/linux
+Documentation=https://github.com/HelloVIMS/Gadget-SDK/tree/main/linux
 After=network-online.target
 Wants=network-online.target
 
