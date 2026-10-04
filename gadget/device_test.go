@@ -382,18 +382,34 @@ func TestPairFallsBackAcrossAddresses(t *testing.T) {
 	}
 }
 
-func TestPairRequiresRun(t *testing.T) {
+func TestPairWaitsForRun(t *testing.T) {
 	store, _ := NewFileStore(t.TempDir())
-	dev, err := New(Config{Name: "idle", Store: store})
+	dev, err := New(Config{Name: "late", Store: store})
 	if err != nil {
 		t.Fatal(err)
 	}
 	host := newTestHost(t)
-	if _, err := dev.Pair(context.Background(), host.pairingURI()); !errors.Is(err, ErrNotRunning) {
-		t.Fatalf("got %v", err)
+	short, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if _, err := dev.Pair(short, host.pairingURI()); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Pair without Run: %v", err)
 	}
 	if _, err := dev.SendMessage(context.Background(), "hi", ""); !errors.Is(err, ErrOffline) {
-		t.Fatalf("got %v", err)
+		t.Fatalf("SendMessage without a session: %v", err)
+	}
+	// Pair called before Run starts completes once it does.
+	uri := host.pairingURI()
+	result := make(chan error, 1)
+	go func() {
+		_, err := dev.Pair(context.Background(), uri)
+		result <- err
+	}()
+	ctx, stop := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- dev.Run(ctx) }()
+	defer func() { stop(); <-done }()
+	if err := <-result; err != nil {
+		t.Fatal(err)
 	}
 }
 

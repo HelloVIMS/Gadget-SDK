@@ -37,11 +37,8 @@ const (
 	maxStoredAddrs = protocol.MaxPairingAddrs
 )
 
-// Errors.
-var (
-	ErrOffline    = errors.New("gadget: not connected to the host")
-	ErrNotRunning = errors.New("gadget: not running")
-)
+// ErrOffline is returned by calls made while no session is up.
+var ErrOffline = errors.New("gadget: not connected to the host")
 
 // State is where a gadget is in its lifecycle.
 type State string
@@ -275,7 +272,7 @@ func (d *Device) Run(ctx context.Context) error {
 		attempt = 0
 		d.remember(p, w, addr)
 		d.log.Info("gadget: connected", "id", d.id, "host", w.Host, "addr", addr)
-		pending = d.serve(ctx, sess, w.Host, addr)
+		pending = d.serve(ctx, sess, w.Host, addr, nil)
 	}
 }
 
@@ -298,13 +295,16 @@ func (d *Device) forgetIfUnpaired(err error) bool {
 }
 
 // serve runs a session until it ends, ctx ends or Pair is called; it
-// returns that pair request, if any.
-func (d *Device) serve(ctx context.Context, sess *protocol.Session, host, addr string) *pairRequest {
+// returns that pair request, if any. ready runs once the session is live.
+func (d *Device) serve(ctx context.Context, sess *protocol.Session, host, addr string, ready func()) *pairRequest {
 	d.setSession(sess)
 	defer d.setSession(nil)
 	d.setStatus(StateConnected, host, addr, nil)
 	done := make(chan error, 1)
 	go func() { done <- sess.Run() }()
+	if ready != nil {
+		ready()
+	}
 	select {
 	case err := <-done:
 		if !d.forgetIfUnpaired(err) {
@@ -341,9 +341,9 @@ func (d *Device) pairAndServe(ctx context.Context, req pairRequest) *pairRequest
 		req.result <- pairOutcome{err: fmt.Errorf("gadget: store pairing: %w", err)}
 		return nil
 	}
-	req.result <- pairOutcome{res: PairResult{ID: w.ID, Host: host, SAS: sess.Conn().SAS(), Addr: addr}}
 	d.log.Info("gadget: paired", "id", w.ID, "host", host, "addr", addr)
-	return d.serve(ctx, sess, host, addr)
+	res := PairResult{ID: w.ID, Host: host, SAS: sess.Conn().SAS(), Addr: addr}
+	return d.serve(ctx, sess, host, addr, func() { req.result <- pairOutcome{res: res} })
 }
 
 // connect tries addrs in order and returns the first established session.
@@ -428,8 +428,8 @@ func backoff(attempt int) time.Duration {
 }
 
 // Pair pairs the gadget with the host in a pairing URI from VIMS (Settings
-// → Devices → Add device). Run must be running. Pairing replaces any
-// previous host.
+// → Devices → Add device), replacing any previous host. Run carries the
+// pairing out: Pair waits for it until the pairing completes or ctx ends.
 func (d *Device) Pair(ctx context.Context, uri string) (PairResult, error) {
 	p, err := protocol.ParsePairingURI(uri)
 	if err != nil {
@@ -437,9 +437,6 @@ func (d *Device) Pair(ctx context.Context, uri string) (PairResult, error) {
 	}
 	if p.Expired(time.Now()) {
 		return PairResult{}, errors.New("gadget: this pairing URI has expired; create a new one in VIMS")
-	}
-	if !d.running.Load() {
-		return PairResult{}, ErrNotRunning
 	}
 	req := pairRequest{p: p, result: make(chan pairOutcome, 1)}
 	select {
