@@ -64,6 +64,10 @@ fmt.Println("paired as", res.ID, "code", res.SAS)
 `dev.SendMessage(ctx, "The lamp's bulb burnt out", "")` messages you;
 `dev.Notify` sends events.
 
+## Examples
+
+- [T3 Code bridge](examples/t3-gadget/README.md): an opt-in, project-scoped coding-task gadget with isolated worktrees and persistent submission receipts.
+
 ## Develop
 
 Go 1.24 or later. The tests need no network and no hardware:
