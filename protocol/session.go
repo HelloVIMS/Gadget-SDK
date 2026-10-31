@@ -207,14 +207,20 @@ func (s *Session) handleCall(f Frame) error {
 		s.mu.Unlock()
 		return protocolErrorf("CALL id %d reused", f.ID)
 	}
-	if len(s.running) >= s.conn.LocalLimits().MaxCalls {
+	if running := len(s.running); running >= s.conn.LocalLimits().MaxCalls {
 		s.mu.Unlock()
-		go s.reply(f.ID, nil, Errorf(CodeBusy, "already running %d calls", len(s.running)))
+		go s.reply(f.ID, nil, Errorf(CodeBusy, "already running %d calls", running))
 		return nil
 	}
-	ctx, cancel := context.WithCancel(s.ctx)
+	var ctx context.Context
+	var cancel context.CancelFunc
 	if h.TimeoutMS > 0 {
-		ctx, cancel = context.WithTimeout(s.ctx, time.Duration(h.TimeoutMS)*time.Millisecond)
+		// Clamp before converting milliseconds to a nanosecond Duration.
+		// A large positive wire timeout must not wrap into an expired one.
+		const maxTimeoutMS = int64((1<<63 - 1) / time.Millisecond)
+		ctx, cancel = context.WithTimeout(s.ctx, time.Duration(min(h.TimeoutMS, maxTimeoutMS))*time.Millisecond)
+	} else {
+		ctx, cancel = context.WithCancel(s.ctx)
 	}
 	s.running[f.ID] = cancel
 	s.mu.Unlock()
@@ -328,6 +334,9 @@ func (s *Session) newID() uint32 {
 // through; nil omits it). ctx's deadline becomes the call's timeout_ms. A
 // failure reported by the peer is a *RemoteError.
 func (s *Session) Call(ctx context.Context, command string, input any, body []byte) (*Reply, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if !ValidCommandName(command) {
 		return nil, fmt.Errorf("vgp: invalid command name %q", command)
 	}
@@ -343,9 +352,6 @@ func (s *Session) Call(ctx context.Context, command string, input any, body []by
 		}
 		h.Input = b
 	}
-	if dl, ok := ctx.Deadline(); ok {
-		h.TimeoutMS = max(time.Until(dl).Milliseconds(), 1)
-	}
 	select {
 	case s.outSem <- struct{}{}:
 	case <-ctx.Done():
@@ -354,7 +360,21 @@ func (s *Session) Call(ctx context.Context, command string, input any, body []by
 		return nil, ErrSessionClosed
 	}
 	defer func() { <-s.outSem }()
-
+	// select may acquire a free slot even when ctx.Done is ready. Input
+	// encoding and waiting for capacity may also have consumed the deadline.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if dl, ok := ctx.Deadline(); ok {
+		remaining := time.Until(dl)
+		if remaining <= 0 {
+			return nil, context.DeadlineExceeded
+		}
+		h.TimeoutMS = remaining.Milliseconds()
+		if remaining%time.Millisecond != 0 {
+			h.TimeoutMS++ // round up without overflowing time.Duration
+		}
+	}
 	id := s.newID()
 	ch := make(chan Frame, 1)
 	s.mu.Lock()
