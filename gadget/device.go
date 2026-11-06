@@ -81,7 +81,11 @@ type Config struct {
 	OnStatus func(Status)
 	// OnEvent receives EVENT frames from the host; keep it fast.
 	OnEvent func(*protocol.Event)
-	Logger  *slog.Logger
+	// Attestation, when set, is sent with security.attest on every connect
+	// and every AttestEvery (default six hours) while connected.
+	Attestation func() (protocol.SecurityAttestation, error)
+	AttestEvery time.Duration
+	Logger      *slog.Logger
 }
 
 // PairResult is the outcome of a successful Pair.
@@ -305,6 +309,8 @@ func (d *Device) serve(ctx context.Context, sess *protocol.Session, host, addr s
 	if ready != nil {
 		ready()
 	}
+	stopAttest := d.attestLoop(ctx, sess.Done())
+	defer stopAttest()
 	select {
 	case err := <-done:
 		if !d.forgetIfUnpaired(err) {
@@ -489,6 +495,62 @@ func (d *Device) SendMessage(ctx context.Context, text, thread string) (protocol
 		return protocol.MessageOutput{}, fmt.Errorf("gadget: message.send reply: %w", err)
 	}
 	return out, nil
+}
+
+// Attest sends the host what this gadget runs (security.attest).
+func (d *Device) Attest(ctx context.Context, a protocol.SecurityAttestation) error {
+	if err := a.Validate(); err != nil {
+		return err
+	}
+	_, err := d.Call(ctx, protocol.ServiceSecurityAttest, a, nil)
+	return err
+}
+
+// ReportSecurity tells the owner's VIMS about something this gadget saw
+// (security.report): failed logins, a new listener, tampering, a sensor
+// reading that can't be right.
+func (d *Device) ReportSecurity(ctx context.Context, r protocol.SecurityReport) error {
+	if err := r.Validate(); err != nil {
+		return err
+	}
+	_, err := d.Call(ctx, protocol.ServiceSecurityReport, r, nil)
+	return err
+}
+
+// attestLoop attests now and then every AttestEvery until the session ends;
+// the returned func stops it.
+func (d *Device) attestLoop(ctx context.Context, sessionDone <-chan struct{}) func() {
+	if d.cfg.Attestation == nil {
+		return func() {}
+	}
+	every := d.cfg.AttestEvery
+	if every <= 0 {
+		every = 6 * time.Hour
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	go func() {
+		t := time.NewTicker(every)
+		defer t.Stop()
+		for {
+			a, err := d.cfg.Attestation()
+			if err == nil {
+				cctx, done := context.WithTimeout(ctx, 30*time.Second)
+				err = d.Attest(cctx, a)
+				done()
+			}
+			if err != nil && ctx.Err() == nil {
+				d.log.Warn("gadget: attestation", "err", err)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-sessionDone:
+				return
+			case <-t.C:
+			}
+		}
+	}()
+	return cancel
 }
 
 // Notify sends the host an EVENT.

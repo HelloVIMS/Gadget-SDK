@@ -242,3 +242,85 @@ func (m MessageInput) Validate() error {
 	}
 	return nil
 }
+
+// Host security services (PROTOCOL.md §7): a gadget tells the host what it
+// runs and what it sees, so the owner's VIMS can notice tampering.
+const (
+	ServiceSecurityAttest = "security.attest"
+	ServiceSecurityReport = "security.report"
+)
+
+// SecurityAttestation is the input of security.attest: what the gadget is
+// running now. The host remembers it and flags changes.
+type SecurityAttestation struct {
+	// Firmware is the lowercase hex SHA-256 of the running image or agent binary.
+	Firmware string `json:"firmware"`
+	Version  string `json:"version,omitempty"`
+	OS       string `json:"os,omitempty"`
+	Kernel   string `json:"kernel,omitempty"`
+	BootID   string `json:"boot_id,omitempty"`
+	// Listening are the gadget's listening ports, "tcp/22".
+	Listening []string `json:"listening,omitempty"`
+}
+
+// SecurityReport is the input of security.report: something the gadget saw.
+type SecurityReport struct {
+	// Kind: login_failed, new_listener, tamper, sensor_anomaly, scan, or
+	// another lowercase name.
+	Kind string `json:"kind"`
+	// Severity: info, low, medium, high or critical.
+	Severity string `json:"severity"`
+	Summary  string `json:"summary"`
+	// Source is a remote address responsible, when the gadget knows one.
+	Source string         `json:"source,omitempty"`
+	Data   map[string]any `json:"data,omitempty"`
+}
+
+var (
+	hexSHA256   = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	reportKind  = regexp.MustCompile(`^[a-z][a-z0-9_]{0,39}$`)
+	listenEntry = regexp.MustCompile(`^(tcp|udp)/[0-9]{1,5}$`)
+	severities  = map[string]bool{"info": true, "low": true, "medium": true, "high": true, "critical": true}
+)
+
+// Validate checks a security.attest input.
+func (a SecurityAttestation) Validate() error {
+	if !hexSHA256.MatchString(a.Firmware) {
+		return Errorf(CodeInvalidInput, "firmware must be a lowercase hex SHA-256")
+	}
+	for _, f := range []string{a.Version, a.OS, a.Kernel, a.BootID} {
+		if len(f) > 200 || !utf8.ValidString(f) {
+			return Errorf(CodeInvalidInput, "version, os, kernel and boot_id are at most 200 characters")
+		}
+	}
+	if len(a.Listening) > 256 {
+		return Errorf(CodeInvalidInput, "at most 256 listening entries")
+	}
+	for _, l := range a.Listening {
+		if !listenEntry.MatchString(l) {
+			return Errorf(CodeInvalidInput, "listening entries look like tcp/22")
+		}
+	}
+	return nil
+}
+
+// Validate checks a security.report input.
+func (r SecurityReport) Validate() error {
+	if !reportKind.MatchString(r.Kind) {
+		return Errorf(CodeInvalidInput, "kind must be 1-40 of a-z 0-9 _ starting with a letter")
+	}
+	if !severities[r.Severity] {
+		return Errorf(CodeInvalidInput, "severity must be info, low, medium, high or critical")
+	}
+	n := utf8.RuneCountInString(r.Summary)
+	if n == 0 || n > 500 || !utf8.ValidString(r.Summary) {
+		return Errorf(CodeInvalidInput, "summary must be 1-500 characters")
+	}
+	if len(r.Source) > 64 {
+		return Errorf(CodeInvalidInput, "source is at most 64 characters")
+	}
+	if len(r.Data) > 20 {
+		return Errorf(CodeInvalidInput, "data has at most 20 fields")
+	}
+	return nil
+}

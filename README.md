@@ -26,6 +26,12 @@ that only read (`device.health`, `file.read`) run straight away; commands
 that change or run things (`file.write`, `system.run`) ask you first, the
 same way every other risky action in VIMS does.
 
+Gadgets can also report to the owner's security events (`security.attest`,
+`security.report`): the Linux agent attests the hash of its own binary, its
+OS, kernel and listening ports on every connect, and reports new listening
+programs and failed SSH logins. VIMS flags a firmware change until the owner
+confirms it. In Go, set `Config.Attestation` and call `Device.ReportSecurity`.
+
 Every session is end-to-end encrypted and mutually authenticated (Noise IK).
 Both sides can show a six-digit code after pairing; if the codes match,
 nobody stood in between.

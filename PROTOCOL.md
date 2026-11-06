@@ -299,10 +299,18 @@ CANCEL  header {}
 | Service | Input | Output |
 |---|---|---|
 | `message.send` | `{"text": "…", "thread": "optional"}` — text of 1–4000 characters; `thread` (at most 64 of `[A-Za-z0-9._:-]`) groups messages into a side conversation | `{"id": "m-…", "at": "<RFC 3339>"}` |
+| `security.attest` | `{"firmware": "<sha256 hex>", "version": "…", "os": "…", "kernel": "…", "boot_id": "…", "listening": ["tcp/22"]}` — what the gadget runs now; `firmware` (lowercase hex SHA-256 of the running image or agent binary) is required, the rest at most 200 characters, up to 256 `listening` entries of `tcp/<port>` or `udp/<port>` | `{}` |
+| `security.report` | `{"kind": "login_failed", "severity": "medium", "summary": "…", "source": "192.0.2.7", "data": {…}}` — something the gadget saw; `kind` is 1–40 of `[a-z0-9_]` starting with a letter (`login_failed`, `new_listener`, `tamper`, `sensor_anomaly`, `scan`…), `severity` one of `info` `low` `medium` `high` `critical`, `summary` 1–500 characters, `source` at most 64, `data` at most 20 fields | `{}` |
 
 The VIMS host shows each message to the owner as a notification and keeps the
 latest ones per gadget. It accepts at most 30 messages per minute per gadget
 (`busy` beyond).
+
+The host remembers each gadget's last attestation and treats a different
+`firmware` as possible tampering until the owner confirms it (an update),
+and new `listening` entries as worth a look. Reports go to the owner's
+security events. A gadget SHOULD attest on every connect and at least every
+six hours; the host accepts at most 30 security calls per minute per gadget.
 
 ## 8. Events, keepalive, close
 

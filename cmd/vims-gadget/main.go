@@ -31,7 +31,9 @@ import (
 	"github.com/hellovims/gadget-sdk/gadget"
 	"github.com/hellovims/gadget-sdk/linux/commands"
 	"github.com/hellovims/gadget-sdk/linux/control"
+	"github.com/hellovims/gadget-sdk/linux/security"
 	"github.com/hellovims/gadget-sdk/linux/service"
+	"github.com/hellovims/gadget-sdk/protocol"
 )
 
 // version is set at build time with -ldflags "-X main.version=…".
@@ -132,6 +134,7 @@ func runAgent(args []string) error {
 		OnStatus: func(s gadget.Status) {
 			log.Info("status", "state", s.State, "host", s.Host, "addr", s.Addr, "err", s.LastError)
 		},
+		Attestation: func() (protocol.SecurityAttestation, error) { return security.Attestation(firmware) },
 	})
 	if err != nil {
 		return err
@@ -145,6 +148,14 @@ func runAgent(args []string) error {
 	log.Info("vims-gadget started", "id", dev.ID(), "name", *name, "state_dir", *stateDir, "socket", *socket)
 	runErr := make(chan error, 1)
 	go func() { runErr <- dev.Run(ctx) }()
+	// What this machine sees goes to the owner's security events.
+	go (&security.Watcher{Report: func(ctx context.Context, r protocol.SecurityReport) error {
+		err := dev.ReportSecurity(ctx, r)
+		if err != nil && !errors.Is(err, gadget.ErrOffline) {
+			log.Debug("security report", "err", err)
+		}
+		return err
+	}}).Run(ctx)
 	select {
 	case err := <-ctlErr:
 		stop()
